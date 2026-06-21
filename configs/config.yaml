@@ -1,0 +1,89 @@
+# ── Deep Learning Cars — Configuration ──────────────────────────────
+
+# Chọn thuật toán: ga (Genetic Algorithm) | ppo (Proximal Policy Optimization)
+algorithm: ga
+
+genetic_algorithm:
+  population_size: 20       # Số xe mỗi thế hệ
+  n_elites: 4               # Giữ lại top N (không đột biến)
+  mutation_rate: 0.08       # Xác suất đột biến mỗi weight
+  mutation_strength: 0.30   # Biên độ đột biến (std Gaussian)
+  crossover_prob: 0.50      # Uniform crossover probability
+
+neural_network:
+  architecture: [5, 6, 4, 2]
+  activation: tanh           # tanh | relu | sigmoid
+  weight_init_std: 0.8      # Khởi tạo random weights
+
+ppo:
+  hidden_sizes: [64, 64]    # Kiến trúc backbone
+  lr: 0.0003                # Learning rate (Adam)
+  gamma: 0.99               # Discount factor
+  gae_lambda: 0.95          # GAE lambda
+  clip_epsilon: 0.2         # PPO clipping range
+  epochs: 10                # Số epoch update mỗi batch
+  batch_size: 64            # Mini-batch size
+  entropy_coeff: 0.01       # Hệ số entropy bonus
+  value_coeff: 0.5          # Hệ số value loss
+  max_grad_norm: 0.5        # Gradient clipping
+  max_steps_per_episode: 3000  # Frames tối đa mỗi episode
+  update_every: 2048        # Steps giữa mỗi lần update
+  total_episodes: 500       # Tổng số episodes training
+
+reward:
+  speed_bonus_weight: 0.1   # Hệ số thưởng tốc độ
+  wall_penalty: -10.0       # Phạt va chạm
+  checkpoint_bonus: 50.0    # Thưởng qua checkpoint
+  stuck_penalty: -0.5       # Phạt đứng im
+  alive_bonus: 0.05         # Thưởng sống sót mỗi frame
+  max_speed_ref: 3.0        # Tốc độ tham chiếu
+
+perception:
+  mode: sensor              # sensor | pixel
+  capture_size: 84          # Kích thước ảnh chụp (pixels, vuông)
+  frame_stack: 4            # Số frames gom lại cho CNN
+  feature_dim: 512          # Kích thước feature vector output CNN
+  grayscale: true           # Chuyển sang ảnh xám
+
+simulation:
+  n_sensors: 5              # Số tia cảm biến
+  sensor_range: 120         # Pixels — tầm nhìn tối đa
+  sensor_angles:            # Góc so với hướng xe (radian)
+    - -0.6
+    - -0.3
+    - 0.0
+    - 0.3
+    - 0.6
+  max_speed: 3.0            # Pixel/frame
+  acceleration: 0.15        # Tăng tốc mỗi frame
+  friction: 0.02            # Giảm tốc tự nhiên
+  max_steer: 0.08           # Góc lái tối đa mỗi frame (rad)
+  fitness_distance_weight: 1.0
+  fitness_speed_bonus: 0.1  # Thưởng thêm cho xe đi nhanh
+  max_stuck_frames: 120     # Tự chết nếu fitness không tăng
+
+rendering:
+  width: 1280
+  height: 720
+  fps: 60
+  show_sensors: true        # Hiển thị tia cảm biến
+  show_trails: true         # Hiển thị vết di chuyển
+  trail_length: 40          # Số frame trail
+  elite_color: [29, 158, 117]   # RGB #1D9E75
+  normal_color: [55, 138, 221]  # RGB #3788DD
+  dead_color: [226, 75, 74]     # RGB #E24B4A
+  best_color: [239, 159, 39]    # RGB #EF9F27
+  sensor_color: [255, 255, 255, 60]  # RGBA
+
+track:
+  default: oval             # oval | figure8 | city | custom
+  track_width: 56           # Pixels
+  checkpoint_interval: 60   # Pixels giữa các checkpoint
+
+training:
+  max_generations: 200
+  headless: false           # Bỏ rendering để train nhanh hơn
+  save_best_every: 10       # Lưu best genome mỗi N gen
+  output_dir: ./checkpoints
+  log_interval: 1           # In log mỗi N gen
+

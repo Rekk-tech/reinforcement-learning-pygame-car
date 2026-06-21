@@ -1,0 +1,407 @@
+"""
+main.py
+--------
+Entry point — ket noi tat ca thanh phan va chay training loop.
+
+Usage:
+    python main.py                                # GA mode (default)
+    python main.py --config configs/config.yaml
+    python main.py --algorithm ppo --headless     # PPO mode
+    python main.py --track figure8 --headless --generations 50
+    python main.py --resume                       # Tiep tuc tu checkpoint
+"""
+
+import argparse
+import yaml
+import sys
+import numpy as np
+from pathlib import Path
+
+# -- Them src vao path -------------------------------------------------------
+sys.path.insert(0, str(Path(__file__).parent))
+
+from src.core.neural_network import NeuralNetwork
+from src.core.genetic_algorithm import GeneticAlgorithm
+from src.simulation.car import Car
+from src.simulation.track import Track
+
+
+def load_config(path: str) -> dict:
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def apply_config(cfg: dict) -> None:
+    """Ghi config xuong class-level constants."""
+    sim = cfg.get("simulation", {})
+    Car.MAX_SPEED       = sim.get("max_speed", Car.MAX_SPEED)
+    Car.ACCELERATION    = sim.get("acceleration", Car.ACCELERATION)
+    Car.FRICTION        = sim.get("friction", Car.FRICTION)
+    Car.MAX_STEER       = sim.get("max_steer", Car.MAX_STEER)
+    Car.N_SENSORS       = sim.get("n_sensors", Car.N_SENSORS)
+    Car.SENSOR_RANGE    = sim.get("sensor_range", Car.SENSOR_RANGE)
+    Car.SENSOR_ANGLES   = sim.get("sensor_angles", Car.SENSOR_ANGLES)
+    Car.MAX_STUCK_FRAMES = sim.get("max_stuck_frames", Car.MAX_STUCK_FRAMES)
+
+
+# ============================================================================
+#  GA MODE
+# ============================================================================
+
+def make_population(ga: GeneticAlgorithm, track: Track) -> list[Car]:
+    """Tao list Car tu population NN cua GA."""
+    cars = []
+    for i, nn in enumerate(ga.population):
+        car = Car(
+            nn=nn,
+            start_x=track.start_x,
+            start_y=track.start_y,
+            start_angle=track.start_angle,
+            is_elite=(i < ga.n_elites and ga.generation > 0),
+        )
+        cars.append(car)
+    return cars
+
+
+def run_headless(ga: GeneticAlgorithm, track: Track, max_frames: int = 3000) -> list[float]:
+    """Chay 1 generation khong render, tra ve fitness scores."""
+    cars = make_population(ga, track)
+    for _ in range(max_frames):
+        all_dead = all(not c.alive for c in cars)
+        if all_dead:
+            break
+        for car in cars:
+            car.step(track)
+    return [c.fitness for c in cars]
+
+
+def run_with_render(
+    ga: GeneticAlgorithm,
+    track: Track,
+    renderer,
+    max_frames: int = 3000,
+    simulation_speed: int = 1,
+) -> list[float]:
+    """Chay 1 generation voi pygame rendering."""
+    cars = make_population(ga, track)
+
+    for frame in range(max_frames):
+        if renderer.handle_quit():
+            return None  # signal to stop
+
+        for _ in range(simulation_speed):
+            all_dead = all(not c.alive for c in cars)
+            if all_dead:
+                break
+            for car in cars:
+                car.step(track)
+
+        if all(not c.alive for c in cars):
+            break
+
+        alive = [c for c in cars if c.alive]
+        current_best = max(c.fitness for c in cars)
+        stats = {
+            "generation": ga.generation + 1,
+            "current_best": current_best,
+            "all_time_best": max(ga.best_fitness_history + [current_best]),
+        }
+        renderer.draw_frame(cars, track, stats)
+
+        import pygame
+        pygame.display.flip()
+
+    return [c.fitness for c in cars]
+
+
+def run_ga(args, cfg):
+    """Training loop cho Genetic Algorithm mode."""
+    ga_cfg  = cfg.get("genetic_algorithm", {})
+    nn_cfg  = cfg.get("neural_network", {})
+    trk_cfg = cfg.get("track", {})
+    trn_cfg = cfg.get("training", {})
+    ren_cfg = cfg.get("rendering", {})
+
+    headless   = args.headless or trn_cfg.get("headless", False)
+    max_gens   = args.generations or trn_cfg.get("max_generations", 200)
+    track_name = args.track or trk_cfg.get("default", "oval")
+    speed      = args.speed
+    save_every = trn_cfg.get("save_best_every", 10)
+    output_dir = trn_cfg.get("output_dir", "./checkpoints")
+
+    # -- Init --
+    track = Track.from_preset(track_name, trk_cfg.get("track_width", 56))
+    track.center(ren_cfg.get("width", 1280), ren_cfg.get("height", 720))
+
+    ga = GeneticAlgorithm(
+        population_size  = ga_cfg.get("population_size", 20),
+        n_elites         = ga_cfg.get("n_elites", 4),
+        mutation_rate    = ga_cfg.get("mutation_rate", 0.08),
+        mutation_strength= ga_cfg.get("mutation_strength", 0.30),
+        crossover_prob   = ga_cfg.get("crossover_prob", 0.50),
+        nn_architecture  = nn_cfg.get("architecture", [5, 6, 4, 2]),
+        nn_activation    = nn_cfg.get("activation", "tanh"),
+    )
+
+    # -- Resume --
+    if args.resume:
+        metadata = ga.load_checkpoint(output_dir)
+        if metadata:
+            print(f"  [OK] Da tai checkpoint tu gen {metadata.get('generation', '?')}")
+            print(f"       Best fitness: {metadata.get('best_fitness', '?')}")
+            print(f"       Saved at: {metadata.get('timestamp', '?')}")
+        else:
+            print(f"  [--] Khong tim thay checkpoint tai {output_dir}, khoi tao moi.")
+
+    renderer = None
+    if not headless:
+        from src.rendering.renderer import Renderer
+        renderer = Renderer(
+            width        = ren_cfg.get("width", 1280),
+            height       = ren_cfg.get("height", 720),
+            fps          = ren_cfg.get("fps", 60),
+            show_sensors = ren_cfg.get("show_sensors", True),
+            show_trails  = ren_cfg.get("show_trails", True),
+        )
+
+    print(f"\n{'='*55}")
+    print(f"  Deep Learning Cars -- Genetic Algorithm")
+    print(f"  Track: {track_name} | Pop: {ga.population_size} | Gens: {max_gens}")
+    print(f"  NN: {nn_cfg.get('architecture', [5,6,4,2])} | Mode: {'headless' if headless else 'render'}")
+    if args.resume:
+        print(f"  Resume: gen {ga.generation} | Save every: {save_every}")
+    print(f"{'='*55}\n")
+
+    # -- Training loop --
+    for gen in range(max_gens):
+        if headless:
+            fitness_scores = run_headless(ga, track)
+        else:
+            fitness_scores = run_with_render(ga, track, renderer, simulation_speed=speed)
+            if fitness_scores is None:
+                print("\n  Simulation stopped by user.")
+                break
+
+        print(ga.log_generation(fitness_scores))
+        ga.evolve(fitness_scores)
+
+        if save_every > 0 and ga.generation % save_every == 0:
+            path = ga.save_checkpoint(output_dir)
+            print(f"  [SAVE] Checkpoint saved at gen {ga.generation} -> {path}")
+
+    if ga.best_fitness_history:
+        path = ga.save_checkpoint(output_dir)
+        print(f"\n  [SAVE] Final checkpoint saved -> {path}")
+        print(f"  Training complete. Best fitness: {max(ga.best_fitness_history):.1f}")
+    else:
+        print("\n  Training complete (no generations run).")
+
+    if renderer:
+        renderer.quit()
+
+
+# ============================================================================
+#  PPO MODE
+# ============================================================================
+
+def run_ppo(args, cfg):
+    """Training loop cho PPO mode."""
+    from src.core.ppo_agent import PPOAgent
+    from src.simulation.reward import RewardCalculator
+
+    ppo_cfg = cfg.get("ppo", {})
+    rew_cfg = cfg.get("reward", {})
+    trk_cfg = cfg.get("track", {})
+    trn_cfg = cfg.get("training", {})
+    ren_cfg = cfg.get("rendering", {})
+    sim_cfg = cfg.get("simulation", {})
+
+    headless   = args.headless or trn_cfg.get("headless", False)
+    track_name = args.track or trk_cfg.get("default", "oval")
+    output_dir = trn_cfg.get("output_dir", "./checkpoints")
+    save_every = trn_cfg.get("save_best_every", 10)
+
+    total_episodes    = args.generations or ppo_cfg.get("total_episodes", 500)
+    max_steps         = ppo_cfg.get("max_steps_per_episode", 3000)
+    update_every      = ppo_cfg.get("update_every", 2048)
+    obs_dim           = sim_cfg.get("n_sensors", 5)
+
+    # -- Init track --
+    track = Track.from_preset(track_name, trk_cfg.get("track_width", 56))
+    track.center(ren_cfg.get("width", 1280), ren_cfg.get("height", 720))
+
+    # -- Init PPO agent --
+    agent = PPOAgent(
+        obs_dim       = obs_dim,
+        action_dim    = 2,
+        hidden_sizes  = ppo_cfg.get("hidden_sizes", [64, 64]),
+        lr            = ppo_cfg.get("lr", 3e-4),
+        gamma         = ppo_cfg.get("gamma", 0.99),
+        gae_lambda    = ppo_cfg.get("gae_lambda", 0.95),
+        clip_epsilon  = ppo_cfg.get("clip_epsilon", 0.2),
+        epochs        = ppo_cfg.get("epochs", 10),
+        batch_size    = ppo_cfg.get("batch_size", 64),
+        entropy_coeff = ppo_cfg.get("entropy_coeff", 0.01),
+        value_coeff   = ppo_cfg.get("value_coeff", 0.5),
+        max_grad_norm = ppo_cfg.get("max_grad_norm", 0.5),
+    )
+
+    # -- Init reward calculator --
+    reward_calc = RewardCalculator.from_config(rew_cfg)
+
+    # -- Resume --
+    ckpt_path = Path(output_dir) / "ppo_model.pt"
+    if args.resume and ckpt_path.exists():
+        agent.load(str(ckpt_path))
+        print(f"  [OK] Da tai PPO checkpoint: ep {agent.episode_count}, steps {agent.total_steps}")
+    elif args.resume:
+        print(f"  [--] Khong tim thay PPO checkpoint tai {ckpt_path}, khoi tao moi.")
+
+    # -- Init dummy car (PPO dung 1 xe duy nhat) --
+    dummy_nn = NeuralNetwork(architecture=[obs_dim, 4, 2], activation="tanh")
+    car = Car(
+        nn=dummy_nn,
+        start_x=track.start_x,
+        start_y=track.start_y,
+        start_angle=track.start_angle,
+    )
+
+    # -- Renderer --
+    renderer = None
+    if not headless:
+        from src.rendering.renderer import Renderer
+        renderer = Renderer(
+            width        = ren_cfg.get("width", 1280),
+            height       = ren_cfg.get("height", 720),
+            fps          = ren_cfg.get("fps", 60),
+            show_sensors = ren_cfg.get("show_sensors", True),
+            show_trails  = ren_cfg.get("show_trails", True),
+        )
+
+    print(f"\n{'='*55}")
+    print(f"  Deep Learning Cars -- PPO Agent")
+    print(f"  Track: {track_name} | Episodes: {total_episodes}")
+    print(f"  Network: FC{ppo_cfg.get('hidden_sizes', [64,64])} | lr: {ppo_cfg.get('lr', 3e-4)}")
+    print(f"  Mode: {'headless' if headless else 'render'}")
+    print(f"{'='*55}\n")
+
+    # -- Training loop --
+    global_steps = agent.total_steps
+
+    for ep in range(total_episodes):
+        # Reset episode
+        car.gym_reset(track.start_x, track.start_y, track.start_angle)
+        reward_calc.reset()
+        obs = car.get_observation(track)
+        episode_reward = 0.0
+
+        for step_i in range(max_steps):
+            # Select action
+            action, log_prob, value = agent.select_action(np.array(obs))
+
+            # Step environment
+            next_obs, base_reward, done, info = car.gym_step(action, track)
+
+            # Shaped reward
+            reward = reward_calc.compute(car, track, done)
+            episode_reward += reward
+
+            # Store transition
+            agent.buffer.store(
+                state=np.array(obs),
+                action=action,
+                reward=reward,
+                value=value,
+                log_prob=log_prob,
+                done=done,
+            )
+
+            global_steps += 1
+            obs = next_obs
+
+            # Render
+            if renderer and not done:
+                if renderer.handle_quit():
+                    print("\n  Simulation stopped by user.")
+                    if agent.episode_rewards:
+                        Path(output_dir).mkdir(parents=True, exist_ok=True)
+                        agent.save(str(ckpt_path))
+                        print(f"  [SAVE] PPO model saved -> {ckpt_path}")
+                    if renderer:
+                        renderer.quit()
+                    return
+
+                stats = {
+                    "generation": agent.episode_count + 1,
+                    "current_best": episode_reward,
+                    "all_time_best": max(agent.episode_rewards + [episode_reward]) if agent.episode_rewards else episode_reward,
+                }
+                renderer.draw_frame([car], track, stats)
+                import pygame
+                pygame.display.flip()
+
+            # Update policy khi du data
+            if len(agent.buffer) >= update_every:
+                update_stats = agent.update()
+
+            if done:
+                break
+
+        # Log episode
+        agent.total_steps = global_steps
+        log_str = agent.log_episode(episode_reward)
+        print(log_str)
+
+        # Auto-save
+        if save_every > 0 and (agent.episode_count % save_every == 0):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            agent.save(str(ckpt_path))
+            print(f"  [SAVE] PPO model saved at ep {agent.episode_count} -> {ckpt_path}")
+
+    # Final update voi data con lai trong buffer
+    if len(agent.buffer) > 0:
+        agent.update()
+
+    # Final save
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    agent.save(str(ckpt_path))
+    best_reward = max(agent.episode_rewards) if agent.episode_rewards else 0.0
+    print(f"\n  [SAVE] Final PPO model saved -> {ckpt_path}")
+    print(f"  Training complete. Best episode reward: {best_reward:.1f}")
+
+    if renderer:
+        renderer.quit()
+
+
+# ============================================================================
+#  MAIN
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Deep Learning Cars")
+    parser.add_argument("--config",      default="configs/config.yaml")
+    parser.add_argument("--algorithm",   default=None, help="ga | ppo")
+    parser.add_argument("--track",       default=None, help="oval | figure8 | city")
+    parser.add_argument("--headless",    action="store_true")
+    parser.add_argument("--generations", type=int, default=None,
+                        help="Generations (GA) or Episodes (PPO)")
+    parser.add_argument("--speed",       type=int, default=1,
+                        help="Physics steps per render frame (1-10)")
+    parser.add_argument("--resume",      action="store_true",
+                        help="Tiep tuc huan luyen tu checkpoint da luu")
+    args = parser.parse_args()
+
+    # -- Load config --
+    cfg = load_config(args.config)
+    apply_config(cfg)
+
+    algorithm = args.algorithm or cfg.get("algorithm", "ga")
+
+    if algorithm == "ppo":
+        run_ppo(args, cfg)
+    else:
+        run_ga(args, cfg)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,33 @@
+# ── Docker Compose ──────────────────────────────────────────────────
+# Usage:
+#   docker-compose up              # Chay simulation
+#   docker-compose up mlflow       # Chi chay MLflow server
+#   docker-compose up app          # Chi chay training
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+  app:
+    build: .
+    container_name: deep-learning-cars
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./configs:/app/configs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SDL_VIDEODRIVER=dummy
+      - SDL_AUDIODRIVER=dummy
+    command: ["--headless", "--generations", "100"]
+    depends_on:
+      - mlflow
+
+  mlflow:
+    image: python:3.13-slim
+    container_name: mlflow-server
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns
+    working_dir: /app
+    command: >
+      bash -c "pip install mlflow --quiet &&
+               mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri ./mlruns"
