@@ -23,6 +23,8 @@ import torch.optim as optim
 from torch.distributions import Normal
 from typing import List, Tuple, Dict, Optional
 
+from src.core.cnn_encoder import CNNActorCritic
+
 
 # ── Actor-Critic Network ──────────────────────────────────────────────
 
@@ -202,6 +204,7 @@ class PPOAgent:
         obs_dim: int = 5,
         action_dim: int = 2,
         hidden_sizes: List[int] = None,
+        is_cnn: bool = False,
         lr: float = 3e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -222,12 +225,20 @@ class PPOAgent:
         self.max_grad_norm = max_grad_norm
 
         self.device = torch.device("cpu")
+        self.is_cnn = is_cnn
 
-        self.network = ActorCritic(
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            hidden_sizes=hidden_sizes or [64, 64],
-        ).to(self.device)
+        if self.is_cnn:
+            self.network = CNNActorCritic(
+                in_channels=obs_dim,  # obs_dim ở đây hiểu là in_channels (ví dụ: 4)
+                action_dim=action_dim,
+                feature_dim=512,
+            ).to(self.device)
+        else:
+            self.network = ActorCritic(
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                hidden_sizes=hidden_sizes or [64, 64],
+            ).to(self.device)
 
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
         self.buffer = RolloutBuffer()

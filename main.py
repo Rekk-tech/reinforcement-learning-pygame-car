@@ -24,7 +24,7 @@ from src.core.neural_network import NeuralNetwork
 from src.core.genetic_algorithm import GeneticAlgorithm
 from src.simulation.car import Car
 from src.simulation.track import Track
-
+from mlflow_tracking import MLflowTracker
 
 def load_config(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
@@ -104,7 +104,7 @@ def run_with_render(
         stats = {
             "generation": ga.generation + 1,
             "current_best": current_best,
-            "all_time_best": max(ga.best_fitness_history + [current_best]),
+            "all_time_best": max(ga.best_fitness_history + [current_best]) if ga.best_fitness_history else current_best,
         }
         renderer.draw_frame(cars, track, stats)
 
@@ -172,29 +172,45 @@ def run_ga(args, cfg):
         print(f"  Resume: gen {ga.generation} | Save every: {save_every}")
     print(f"{'='*55}\n")
 
-    # -- Training loop --
-    for gen in range(max_gens):
-        if headless:
-            fitness_scores = run_headless(ga, track)
-        else:
-            fitness_scores = run_with_render(ga, track, renderer, simulation_speed=speed)
-            if fitness_scores is None:
-                print("\n  Simulation stopped by user.")
-                break
+    # -- MLflow Tracking --
+    with MLflowTracker(experiment_name="dl-cars-ga") as tracker:
+        tracker.log_params({
+            "population_size": ga.population_size,
+            "mutation_rate": ga.mutation_rate,
+            "architecture": nn_cfg.get("architecture"),
+            "track": track_name
+        })
 
-        print(ga.log_generation(fitness_scores))
-        ga.evolve(fitness_scores)
+        # -- Training loop --
+        for gen in range(max_gens):
+            if headless:
+                fitness_scores = run_headless(ga, track)
+            else:
+                fitness_scores = run_with_render(ga, track, renderer, simulation_speed=speed)
+                if fitness_scores is None:
+                    print("\n  Simulation stopped by user.")
+                    break
 
-        if save_every > 0 and ga.generation % save_every == 0:
+            print(ga.log_generation(fitness_scores))
+            ga.evolve(fitness_scores)
+
+            tracker.log_metrics({
+                "best_fitness": max(fitness_scores),
+                "mean_fitness": float(np.mean(fitness_scores))
+            }, step=ga.generation)
+
+            if save_every > 0 and ga.generation % save_every == 0:
+                path = ga.save_checkpoint(output_dir)
+                tracker.save_artifact(path)
+                print(f"  [SAVE] Checkpoint saved at gen {ga.generation} -> {path}")
+
+        if ga.best_fitness_history:
             path = ga.save_checkpoint(output_dir)
-            print(f"  [SAVE] Checkpoint saved at gen {ga.generation} -> {path}")
-
-    if ga.best_fitness_history:
-        path = ga.save_checkpoint(output_dir)
-        print(f"\n  [SAVE] Final checkpoint saved -> {path}")
-        print(f"  Training complete. Best fitness: {max(ga.best_fitness_history):.1f}")
-    else:
-        print("\n  Training complete (no generations run).")
+            tracker.save_artifact(path)
+            print(f"\n  [SAVE] Final checkpoint saved -> {path}")
+            print(f"  Training complete. Best fitness: {max(ga.best_fitness_history):.1f}")
+        else:
+            print("\n  Training complete (no generations run).")
 
     if renderer:
         renderer.quit()
@@ -215,6 +231,7 @@ def run_ppo(args, cfg):
     trn_cfg = cfg.get("training", {})
     ren_cfg = cfg.get("rendering", {})
     sim_cfg = cfg.get("simulation", {})
+    per_cfg = cfg.get("perception", {})
 
     headless   = args.headless or trn_cfg.get("headless", False)
     track_name = args.track or trk_cfg.get("default", "oval")
@@ -224,17 +241,46 @@ def run_ppo(args, cfg):
     total_episodes    = args.generations or ppo_cfg.get("total_episodes", 500)
     max_steps         = ppo_cfg.get("max_steps_per_episode", 3000)
     update_every      = ppo_cfg.get("update_every", 2048)
-    obs_dim           = sim_cfg.get("n_sensors", 5)
+    
+    is_cnn = (per_cfg.get("mode", "sensor") == "pixel")
 
     # -- Init track --
     track = Track.from_preset(track_name, trk_cfg.get("track_width", 56))
     track.center(ren_cfg.get("width", 1280), ren_cfg.get("height", 720))
+
+    # -- Camera & Renderer (cho CNN) --
+    camera = None
+    renderer = None
+    
+    # Neu can render cho nguoi xem, hoac can ve ra de camera chup anh
+    if not headless or is_cnn:
+        from src.rendering.renderer import Renderer
+        renderer = Renderer(
+            width        = ren_cfg.get("width", 1280),
+            height       = ren_cfg.get("height", 720),
+            fps          = ren_cfg.get("fps", 60),
+            show_sensors = ren_cfg.get("show_sensors", True),
+            show_trails  = ren_cfg.get("show_trails", True),
+            headless     = headless,  # An cua so neu headless
+        )
+        
+    if is_cnn:
+        from src.simulation.camera import CameraSensor
+        camera = CameraSensor(
+            capture_size = per_cfg.get("capture_size", 84),
+            frame_stack  = per_cfg.get("frame_stack", 4),
+            grayscale    = per_cfg.get("grayscale", True)
+        )
+        obs_dim = camera.observation_shape[0]  # so channels (vi du: 4)
+    else:
+        obs_dim = sim_cfg.get("n_sensors", 5)
 
     # -- Init PPO agent --
     agent = PPOAgent(
         obs_dim       = obs_dim,
         action_dim    = 2,
         hidden_sizes  = ppo_cfg.get("hidden_sizes", [64, 64]),
+        is_cnn        = is_cnn,
         lr            = ppo_cfg.get("lr", 3e-4),
         gamma         = ppo_cfg.get("gamma", 0.99),
         gae_lambda    = ppo_cfg.get("gae_lambda", 0.95),
@@ -258,7 +304,7 @@ def run_ppo(args, cfg):
         print(f"  [--] Khong tim thay PPO checkpoint tai {ckpt_path}, khoi tao moi.")
 
     # -- Init dummy car (PPO dung 1 xe duy nhat) --
-    dummy_nn = NeuralNetwork(architecture=[obs_dim, 4, 2], activation="tanh")
+    dummy_nn = NeuralNetwork(architecture=[5, 4, 2], activation="tanh") # Dummy
     car = Car(
         nn=dummy_nn,
         start_x=track.start_x,
@@ -266,108 +312,136 @@ def run_ppo(args, cfg):
         start_angle=track.start_angle,
     )
 
-    # -- Renderer --
-    renderer = None
-    if not headless:
-        from src.rendering.renderer import Renderer
-        renderer = Renderer(
-            width        = ren_cfg.get("width", 1280),
-            height       = ren_cfg.get("height", 720),
-            fps          = ren_cfg.get("fps", 60),
-            show_sensors = ren_cfg.get("show_sensors", True),
-            show_trails  = ren_cfg.get("show_trails", True),
-        )
-
     print(f"\n{'='*55}")
     print(f"  Deep Learning Cars -- PPO Agent")
     print(f"  Track: {track_name} | Episodes: {total_episodes}")
-    print(f"  Network: FC{ppo_cfg.get('hidden_sizes', [64,64])} | lr: {ppo_cfg.get('lr', 3e-4)}")
-    print(f"  Mode: {'headless' if headless else 'render'}")
+    if is_cnn:
+        print(f"  Network: CNNActorCritic | Vision: {per_cfg.get('capture_size')}px")
+    else:
+        print(f"  Network: FC{ppo_cfg.get('hidden_sizes', [64,64])} | Vision: Sensors")
+    print(f"  Mode: {'headless' if headless else 'render'} | lr: {ppo_cfg.get('lr', 3e-4)}")
     print(f"{'='*55}\n")
 
-    # -- Training loop --
-    global_steps = agent.total_steps
+    # -- MLflow Tracking --
+    with MLflowTracker(experiment_name="dl-cars-ppo") as tracker:
+        tracker.log_params({
+            "is_cnn": is_cnn,
+            "track": track_name,
+            "lr": ppo_cfg.get("lr", 3e-4),
+            "gamma": ppo_cfg.get("gamma", 0.99),
+            "clip_epsilon": ppo_cfg.get("clip_epsilon", 0.2),
+            "epochs": ppo_cfg.get("epochs", 10),
+            "batch_size": ppo_cfg.get("batch_size", 64),
+        })
 
-    for ep in range(total_episodes):
-        # Reset episode
-        car.gym_reset(track.start_x, track.start_y, track.start_angle)
-        reward_calc.reset()
-        obs = car.get_observation(track)
-        episode_reward = 0.0
+        # -- Training loop --
+        global_steps = agent.total_steps
 
-        for step_i in range(max_steps):
-            # Select action
-            action, log_prob, value = agent.select_action(np.array(obs))
+        for ep in range(total_episodes):
+            car.gym_reset(track.start_x, track.start_y, track.start_angle)
+            reward_calc.reset()
+            episode_reward = 0.0
+            
+            # Lay observation dau tien
+            if is_cnn:
+                camera.reset()
+                renderer.draw_frame([car], track, {}) # Ve ra man hinh an
+                obs = camera.observe(renderer.screen, car)
+            else:
+                obs = car.get_observation(track)
 
-            # Step environment
-            next_obs, base_reward, done, info = car.gym_step(action, track)
+            for step_i in range(max_steps):
+                # Select action
+                action, log_prob, value = agent.select_action(np.array(obs))
 
-            # Shaped reward
-            reward = reward_calc.compute(car, track, done)
-            episode_reward += reward
+                # Step environment (vat ly xe di chuyen)
+                next_obs_sensor, base_reward, done, info = car.gym_step(action, track)
 
-            # Store transition
-            agent.buffer.store(
-                state=np.array(obs),
-                action=action,
-                reward=reward,
-                value=value,
-                log_prob=log_prob,
-                done=done,
-            )
+                # Shaped reward
+                reward = reward_calc.compute(car, track, done)
+                episode_reward += reward
 
-            global_steps += 1
-            obs = next_obs
+                # Neu co CNN thi chup anh lai sau khi xe di chuyen
+                if is_cnn:
+                    # Ve hinh anh hien tai cua xe tren track
+                    renderer.draw_frame([car], track, {})
+                    next_obs = camera.observe(renderer.screen, car)
+                else:
+                    next_obs = next_obs_sensor
 
-            # Render
-            if renderer and not done:
-                if renderer.handle_quit():
-                    print("\n  Simulation stopped by user.")
-                    if agent.episode_rewards:
-                        Path(output_dir).mkdir(parents=True, exist_ok=True)
-                        agent.save(str(ckpt_path))
-                        print(f"  [SAVE] PPO model saved -> {ckpt_path}")
-                    if renderer:
+                # Store transition
+                agent.buffer.store(
+                    state=np.array(obs),
+                    action=action,
+                    reward=reward,
+                    value=value,
+                    log_prob=log_prob,
+                    done=done,
+                )
+
+                global_steps += 1
+                obs = next_obs
+
+                # Render len man hinh cho nguoi dung (neu khong phai headless)
+                if not headless and not done:
+                    if renderer.handle_quit():
+                        print("\n  Simulation stopped by user.")
+                        if agent.episode_rewards:
+                            Path(output_dir).mkdir(parents=True, exist_ok=True)
+                            agent.save(str(ckpt_path))
+                            tracker.save_artifact(str(ckpt_path))
+                            print(f"  [SAVE] PPO model saved -> {ckpt_path}")
                         renderer.quit()
-                    return
+                        return
 
-                stats = {
-                    "generation": agent.episode_count + 1,
-                    "current_best": episode_reward,
-                    "all_time_best": max(agent.episode_rewards + [episode_reward]) if agent.episode_rewards else episode_reward,
-                }
-                renderer.draw_frame([car], track, stats)
-                import pygame
-                pygame.display.flip()
+                    stats = {
+                        "generation": agent.episode_count + 1,
+                        "current_best": episode_reward,
+                        "all_time_best": max(agent.episode_rewards + [episode_reward]) if agent.episode_rewards else episode_reward,
+                    }
+                    # Draw hud (khi chup anh camera ta da truyen {} roi de khong in chu len anh)
+                    renderer.draw_frame([car], track, stats)
+                    import pygame
+                    pygame.display.flip()
+                    renderer.clock.tick(renderer.fps)
 
-            # Update policy khi du data
-            if len(agent.buffer) >= update_every:
-                update_stats = agent.update()
+                # Update policy khi du data
+                if len(agent.buffer) >= update_every:
+                    update_stats = agent.update()
+                    # Log update stats (loss, entropy)
+                    tracker.log_metrics(update_stats, step=global_steps)
 
-            if done:
-                break
+                if done:
+                    break
 
-        # Log episode
-        agent.total_steps = global_steps
-        log_str = agent.log_episode(episode_reward)
-        print(log_str)
+            # Log episode
+            agent.total_steps = global_steps
+            log_str = agent.log_episode(episode_reward)
+            print(log_str)
+            
+            tracker.log_metrics({
+                "episode_reward": episode_reward,
+                "episode_steps": step_i + 1
+            }, step=ep)
 
-        # Auto-save
-        if save_every > 0 and (agent.episode_count % save_every == 0):
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            agent.save(str(ckpt_path))
-            print(f"  [SAVE] PPO model saved at ep {agent.episode_count} -> {ckpt_path}")
+            # Auto-save
+            if save_every > 0 and (agent.episode_count % save_every == 0):
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+                agent.save(str(ckpt_path))
+                tracker.save_artifact(str(ckpt_path))
+                print(f"  [SAVE] PPO model saved at ep {agent.episode_count} -> {ckpt_path}")
 
-    # Final update voi data con lai trong buffer
-    if len(agent.buffer) > 0:
-        agent.update()
+        # Final update voi data con lai trong buffer
+        if len(agent.buffer) > 0:
+            agent.update()
 
-    # Final save
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    agent.save(str(ckpt_path))
-    best_reward = max(agent.episode_rewards) if agent.episode_rewards else 0.0
-    print(f"\n  [SAVE] Final PPO model saved -> {ckpt_path}")
-    print(f"  Training complete. Best episode reward: {best_reward:.1f}")
+        # Final save
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        agent.save(str(ckpt_path))
+        tracker.save_artifact(str(ckpt_path))
+        best_reward = max(agent.episode_rewards) if agent.episode_rewards else 0.0
+        print(f"\n  [SAVE] Final PPO model saved -> {ckpt_path}")
+        print(f"  Training complete. Best episode reward: {best_reward:.1f}")
 
     if renderer:
         renderer.quit()

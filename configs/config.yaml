@@ -39,7 +39,7 @@ reward:
   max_speed_ref: 3.0        # Tốc độ tham chiếu
 
 perception:
-  mode: sensor              # sensor | pixel
+  mode: pixel              # sensor | pixel
   capture_size: 84          # Kích thước ảnh chụp (pixels, vuông)
   frame_stack: 4            # Số frames gom lại cho CNN
   feature_dim: 512          # Kích thước feature vector output CNN
