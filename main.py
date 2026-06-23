@@ -79,17 +79,29 @@ def run_with_render(
     ga: GeneticAlgorithm,
     track: Track,
     renderer,
+    hud,
+    controls,
     max_frames: int = 3000,
-    simulation_speed: int = 1,
-) -> list[float]:
-    """Chay 1 generation voi pygame rendering."""
+) -> list[float] | None:
+    """Chay 1 generation voi pygame rendering + HUD + Controls."""
+    import pygame
     cars = make_population(ga, track)
 
     for frame in range(max_frames):
-        if renderer.handle_quit():
-            return None  # signal to stop
+        events = pygame.event.get()
+        if controls.handle_events(events):
+            return None  # signal to stop (quit)
 
-        for _ in range(simulation_speed):
+        if controls.paused:
+            # Ve lai frame hien tai khi pause
+            renderer.draw_frame(cars, track, {})
+            hud.draw(renderer.screen, {}, len([c for c in cars if c.alive]), len(cars))
+            controls.draw(renderer.screen)
+            pygame.display.flip()
+            renderer.clock.tick(renderer.fps)
+            continue
+
+        for _ in range(controls.speed):
             all_dead = all(not c.alive for c in cars)
             if all_dead:
                 break
@@ -107,8 +119,8 @@ def run_with_render(
             "all_time_best": max(ga.best_fitness_history + [current_best]) if ga.best_fitness_history else current_best,
         }
         renderer.draw_frame(cars, track, stats)
-
-        import pygame
+        hud.draw(renderer.screen, stats, len(alive), len(cars))
+        controls.draw(renderer.screen)
         pygame.display.flip()
 
     return [c.fitness for c in cars]
@@ -154,15 +166,25 @@ def run_ga(args, cfg):
             print(f"  [--] Khong tim thay checkpoint tai {output_dir}, khoi tao moi.")
 
     renderer = None
+    hud = None
+    controls = None
     if not headless:
         from src.rendering.renderer import Renderer
+        from src.rendering.hud import HUD
+        from src.ui.controls import UIControls
+        w = ren_cfg.get("width", 1280)
+        h = ren_cfg.get("height", 720)
         renderer = Renderer(
-            width        = ren_cfg.get("width", 1280),
-            height       = ren_cfg.get("height", 720),
+            width        = w,
+            height       = h,
             fps          = ren_cfg.get("fps", 60),
             show_sensors = ren_cfg.get("show_sensors", True),
             show_trails  = ren_cfg.get("show_trails", True),
         )
+        hud = HUD(screen_width=w, screen_height=h)
+        hud.set_algorithm("GA")
+        controls = UIControls(screen_width=w, screen_height=h)
+        controls.speed = speed
 
     print(f"\n{'='*55}")
     print(f"  Deep Learning Cars -- Genetic Algorithm")
@@ -186,10 +208,17 @@ def run_ga(args, cfg):
             if headless:
                 fitness_scores = run_headless(ga, track)
             else:
-                fitness_scores = run_with_render(ga, track, renderer, simulation_speed=speed)
+                fitness_scores = run_with_render(ga, track, renderer, hud, controls)
                 if fitness_scores is None:
                     print("\n  Simulation stopped by user.")
                     break
+
+            # Cap nhat HUD chart data
+            if hud:
+                hud.update({
+                    "current_best": max(fitness_scores),
+                    "mean_fitness": float(np.mean(fitness_scores)),
+                })
 
             print(ga.log_generation(fitness_scores))
             ga.evolve(fitness_scores)
@@ -251,18 +280,28 @@ def run_ppo(args, cfg):
     # -- Camera & Renderer (cho CNN) --
     camera = None
     renderer = None
+    hud = None
+    controls = None
     
     # Neu can render cho nguoi xem, hoac can ve ra de camera chup anh
     if not headless or is_cnn:
         from src.rendering.renderer import Renderer
+        w = ren_cfg.get("width", 1280)
+        h = ren_cfg.get("height", 720)
         renderer = Renderer(
-            width        = ren_cfg.get("width", 1280),
-            height       = ren_cfg.get("height", 720),
+            width        = w,
+            height       = h,
             fps          = ren_cfg.get("fps", 60),
             show_sensors = ren_cfg.get("show_sensors", True),
             show_trails  = ren_cfg.get("show_trails", True),
-            headless     = headless,  # An cua so neu headless
+            headless     = headless,
         )
+        if not headless:
+            from src.rendering.hud import HUD
+            from src.ui.controls import UIControls
+            hud = HUD(screen_width=w, screen_height=h)
+            hud.set_algorithm("PPO")
+            controls = UIControls(screen_width=w, screen_height=h)
         
     if is_cnn:
         from src.simulation.camera import CameraSensor
@@ -384,7 +423,9 @@ def run_ppo(args, cfg):
 
                 # Render len man hinh cho nguoi dung (neu khong phai headless)
                 if not headless and not done:
-                    if renderer.handle_quit():
+                    import pygame
+                    events = pygame.event.get()
+                    if controls and controls.handle_events(events):
                         print("\n  Simulation stopped by user.")
                         if agent.episode_rewards:
                             Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -394,14 +435,26 @@ def run_ppo(args, cfg):
                         renderer.quit()
                         return
 
+                    if controls and controls.paused:
+                        # Ve frame hien tai + HUD + Controls
+                        renderer.draw_frame([car], track, {})
+                        if hud:
+                            hud.draw(renderer.screen, {}, 1 if car.alive else 0, 1)
+                        controls.draw(renderer.screen)
+                        pygame.display.flip()
+                        renderer.clock.tick(renderer.fps)
+                        continue
+
                     stats = {
                         "generation": agent.episode_count + 1,
                         "current_best": episode_reward,
                         "all_time_best": max(agent.episode_rewards + [episode_reward]) if agent.episode_rewards else episode_reward,
                     }
-                    # Draw hud (khi chup anh camera ta da truyen {} roi de khong in chu len anh)
                     renderer.draw_frame([car], track, stats)
-                    import pygame
+                    if hud:
+                        hud.draw(renderer.screen, stats, 1 if car.alive else 0, 1)
+                    if controls:
+                        controls.draw(renderer.screen)
                     pygame.display.flip()
                     renderer.clock.tick(renderer.fps)
 
@@ -414,10 +467,16 @@ def run_ppo(args, cfg):
                 if done:
                     break
 
-            # Log episode
+            # Log episode + update HUD
             agent.total_steps = global_steps
             log_str = agent.log_episode(episode_reward)
             print(log_str)
+
+            if hud:
+                hud.update({
+                    "current_best": episode_reward,
+                    "mean_fitness": float(np.mean(agent.episode_rewards[-100:])) if agent.episode_rewards else episode_reward,
+                })
             
             tracker.log_metrics({
                 "episode_reward": episode_reward,
