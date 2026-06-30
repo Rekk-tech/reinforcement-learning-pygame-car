@@ -24,7 +24,7 @@ from typing import List, Tuple, Dict
 
 # ── Preset tracks ─────────────────────────────────────────────────────
 
-PRESET_TRACKS: Dict[str, List[Tuple[int, int]]] = {
+PRESET_TRACKS: Dict[str, List[Tuple[float, ...]]] = {
     "oval": [
         (150, 90), (320, 70), (490, 80), (600, 140), (620, 220),
         (610, 310), (530, 370), (400, 395), (260, 390), (140, 360),
@@ -36,11 +36,33 @@ PRESET_TRACKS: Dict[str, List[Tuple[int, int]]] = {
         (200, 130), (300, 180), (400, 230), (460, 310), (420, 390),
         (300, 420), (180, 390), (120, 300), (140, 210), (200, 150),
     ],
+    "city_simple": [
+        # Khối chữ nhật với bo góc (fillet)
+        (200, 100, 60), (600, 100, 60), 
+        (700, 200, 80), (700, 400, 80), 
+        (600, 500, 60), (200, 500, 60), 
+        (100, 400, 80), (100, 200, 80)
+    ],
     "city": [
-        (100, 80), (250, 70), (400, 80), (500, 120), (540, 200),
-        (520, 290), (450, 340), (360, 320), (300, 260), (350, 200),
-        (440, 210), (470, 270), (430, 310), (340, 330), (260, 300),
-        (200, 240), (180, 160), (140, 130),
+        # Hình số 8 vuông bám viền ngoài 2 blocks
+        # Top street
+        (200, 100, 60), (400, 100, 60), (600, 100, 60),
+        # Right curve & street
+        (700, 200, 80), (700, 400, 80),
+        # Bottom right curve & street
+        (600, 500, 60), (500, 500, 60),
+        # Inner turn UP
+        (420, 420, 90), (420, 300, 70),
+        # Inner turn LEFT
+        (380, 260, 90), (300, 260, 70),
+        # Inner turn DOWN
+        (260, 300, 90), (260, 420, 70),
+        # Bottom left turn & street
+        (180, 500, 90), (100, 500, 60),
+        # Left curve & street
+        (0, 400, 80), (0, 200, 80),
+        # Top left curve
+        (100, 100, 80)
     ],
 }
 
@@ -63,27 +85,61 @@ class Track:
 
     def __init__(
         self,
-        waypoints: List[Tuple[float, float]] = None,
+        waypoints: List[Tuple[float, ...]] = None,
         track_width: int = 56,
         name: str = "custom",
+        checkpoint_interval: int = 60,
     ):
-        self.waypoints = waypoints or PRESET_TRACKS["oval"]
+        self.waypoints_raw = waypoints or PRESET_TRACKS["oval"]
         self.track_width = track_width
-        self.half_width = track_width / 2
         self.name = name
-        self.n = len(self.waypoints)
+        self.checkpoint_interval = checkpoint_interval
+        self.n = len(self.waypoints_raw)
+
+        self.waypoints = []
+        self.widths = []
+        for p in self.waypoints_raw:
+            self.waypoints.append((float(p[0]), float(p[1])))
+            w = float(p[2]) if len(p) > 2 else float(track_width)
+            self.widths.append(w)
 
         # Vị trí + góc xuất phát
         p0 = self.waypoints[0]
         p1 = self.waypoints[1]
-        self.start_x = float(p0[0])
-        self.start_y = float(p0[1])
+        self.start_x = p0[0]
+        self.start_y = p0[1]
         self.start_angle = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
 
         # Cache numpy arrays cho vectorized distance check
         self._pts = np.array(self.waypoints, dtype=np.float32)
         self._segs_a = self._pts                         # shape (n, 2)
         self._segs_b = np.roll(self._pts, -1, axis=0)   # shifted by 1
+        
+        self.generate_checkpoints()
+
+    def generate_checkpoints(self) -> None:
+        """Tự động sinh checkpoints dọc theo các segment của đường đua."""
+        self.checkpoints: List[Tuple[float, float, float]] = []
+        for i in range(self.n):
+            ax, ay = self.waypoints[i]
+            bx, by = self.waypoints[(i + 1) % self.n]
+            wa = self.widths[i]
+            wb = self.widths[(i + 1) % self.n]
+            
+            dx, dy = bx - ax, by - ay
+            dist = math.hypot(dx, dy)
+            if dist == 0: continue
+            
+            # Số lượng checkpoint trên đoạn này
+            count = max(1, int(dist / self.checkpoint_interval))
+            for j in range(count):
+                t = (j + 1) / (count + 1)  # Không rải ở mép waypoint để tránh trùng
+                cx = ax + t * dx
+                cy = ay + t * dy
+                cw = wa + t * (wb - wa)
+                # Bán kính checkpoint lớn hơn nửa độ rộng đường một chút để xe dễ chạm
+                radius = (cw / 2) + 15
+                self.checkpoints.append((cx, cy, radius))
 
     def center(self, screen_width: int, screen_height: int) -> None:
         """Dịch chuyển toàn bộ track ra giữa màn hình."""
@@ -109,42 +165,48 @@ class Track:
         self._pts = np.array(self.waypoints, dtype=np.float32)
         self._segs_a = self._pts
         self._segs_b = np.roll(self._pts, -1, axis=0)
+        
+        self.generate_checkpoints()
 
     # ── Track geometry helpers ────────────────────────────────────────
 
     @staticmethod
-    def _dist_point_to_segment(
+    def _dist_point_to_segment_ratio(
         px: float, py: float,
-        ax: float, ay: float,
-        bx: float, by: float,
+        ax: float, ay: float, aw: float,
+        bx: float, by: float, bw: float,
     ) -> float:
-        """Khoảng cách từ điểm P đến đoạn thẳng AB."""
+        """Khoảng cách tỉ lệ từ điểm P đến đoạn thẳng AB (d / local_half_width)."""
         dx, dy = bx - ax, by - ay
         len_sq = dx * dx + dy * dy
         if len_sq < 1e-9:
-            return math.hypot(px - ax, py - ay)
+            dist = math.hypot(px - ax, py - ay)
+            return dist / (aw / 2)
+        
         t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len_sq))
         closest_x = ax + t * dx
         closest_y = ay + t * dy
-        return math.hypot(px - closest_x, py - closest_y)
+        
+        dist = math.hypot(px - closest_x, py - closest_y)
+        local_half_width = (aw + t * (bw - aw)) / 2
+        return dist / local_half_width
 
-    def min_dist_to_track(self, x: float, y: float) -> float:
-        """Khoảng cách tối thiểu từ điểm (x,y) đến đường tâm track."""
-        min_d = float("inf")
+    def is_off_track(self, x: float, y: float) -> bool:
+        """True nếu điểm (x,y) nằm ngoài biên đường đua (ratio > 1.0 cho tất cả segments)."""
+        min_ratio = float("inf")
         for i in range(self.n):
             ax, ay = self.waypoints[i]
             bx, by = self.waypoints[(i + 1) % self.n]
-            d = self._dist_point_to_segment(x, y, ax, ay, bx, by)
-            if d < min_d:
-                min_d = d
-        return min_d
-
-    def is_off_track(self, x: float, y: float) -> bool:
-        """
-        True nếu điểm (x,y) nằm ngoài biên đường đua.
-        Đây là hot-path — được gọi nhiều nhất trong sim.
-        """
-        return self.min_dist_to_track(x, y) > self.half_width
+            aw = self.widths[i]
+            bw = self.widths[(i + 1) % self.n]
+            
+            ratio = self._dist_point_to_segment_ratio(x, y, ax, ay, aw, bx, by, bw)
+            if ratio <= 1.0:
+                return False  # Nằm trong đoạn này => on track
+            if ratio < min_ratio:
+                min_ratio = ratio
+                
+        return True # Nằm ngoài tất cả các đoạn
 
     # ── Factory methods ───────────────────────────────────────────────
 
@@ -166,8 +228,16 @@ class Track:
         import yaml
         with open(path) as f:
             data = yaml.safe_load(f)
+        
+        waypoints = []
+        for p in data["waypoints"]:
+            if "w" in p:
+                waypoints.append((p["x"], p["y"], p["w"]))
+            else:
+                waypoints.append((p["x"], p["y"]))
+                
         return cls(
-            waypoints=[(p["x"], p["y"]) for p in data["waypoints"]],
+            waypoints=waypoints,
             track_width=data.get("track_width", 56),
             name=data.get("name", "custom"),
         )

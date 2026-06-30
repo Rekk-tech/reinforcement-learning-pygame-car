@@ -48,6 +48,8 @@ class GeneticAlgorithm:
         crossover_prob: float = 0.50,
         nn_architecture: List[int] = None,
         nn_activation: str = "tanh",
+        mutation_decay: float = 0.99,
+        min_mutation_strength: float = 0.05,
     ):
         self.population_size = population_size
         self.n_elites = n_elites
@@ -56,6 +58,8 @@ class GeneticAlgorithm:
         self.crossover_prob = crossover_prob
         self.nn_architecture = nn_architecture or [5, 6, 4, 2]
         self.nn_activation = nn_activation
+        self.mutation_decay = mutation_decay
+        self.min_mutation_strength = min_mutation_strength
 
         self.generation = 0
         self.best_fitness_history: List[float] = []
@@ -163,6 +167,13 @@ class GeneticAlgorithm:
             new_population.append(self._make_nn(child_genome))
 
         self.population = new_population
+
+        # Mutation strength decay (giảm 1% mỗi thế hệ, sàn min_mutation_strength)
+        self.mutation_strength = max(
+            self.min_mutation_strength,
+            self.mutation_strength * self.mutation_decay,
+        )
+
         return self.population
 
     # ── Checkpointing ─────────────────────────────────────────────────
@@ -222,6 +233,16 @@ class GeneticAlgorithm:
 
         # Tải genome
         genome = np.load(str(weights_path))
+
+        # Kiểm tra tương thích kiến trúc
+        expected_size = self.population[0].genome_size
+        if len(genome) != expected_size:
+            print(f"  [WARNING] Checkpoint khong tuong thich!")
+            print(f"            Checkpoint genome: {len(genome)} tham so")
+            print(f"            Kien truc hien tai: {expected_size} tham so ({self.nn_architecture})")
+            print(f"            Bo qua checkpoint, khoi tao moi.")
+            return None
+
         loaded_nn = self._make_nn(genome)
 
         # Inject vào slot đầu tiên (best position)
@@ -250,15 +271,20 @@ class GeneticAlgorithm:
             "all_time_best": max(self.best_fitness_history),
         }
 
-    def log_generation(self, fitness_scores: List[float]) -> str:
+    def log_generation(self, fitness_scores: List[float], alive_count: int = None) -> str:
         """Format log string cho 1 generation."""
         best = max(fitness_scores)
         mean = float(np.mean(fitness_scores))
         worst = min(fitness_scores)
+        
+        if alive_count is None:
+            # Fallback for old callers
+            alive_count = sum(1 for f in fitness_scores if f > 0)
+            
         return (
             f"Gen {self.generation:3d} | "
             f"best={best:7.1f} | mean={mean:7.1f} | worst={worst:7.1f} | "
-            f"alive={sum(1 for f in fitness_scores if f > 0):2d}/{len(fitness_scores)}"
+            f"alive={alive_count:2d}/{len(fitness_scores)}"
         )
 
     def __repr__(self) -> str:

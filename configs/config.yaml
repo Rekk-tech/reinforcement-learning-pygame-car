@@ -11,7 +11,7 @@ genetic_algorithm:
   crossover_prob: 0.50      # Uniform crossover probability
 
 neural_network:
-  architecture: [5, 6, 4, 2]
+  architecture: [8, 8, 4, 2]
   activation: tanh           # tanh | relu | sigmoid
   weight_init_std: 0.8      # Khởi tạo random weights
 
@@ -39,21 +39,23 @@ reward:
   max_speed_ref: 3.0        # Tốc độ tham chiếu
 
 perception:
-  mode: pixel              # sensor | pixel
+  mode: sensor              # sensor | pixel
   capture_size: 84          # Kích thước ảnh chụp (pixels, vuông)
   frame_stack: 4            # Số frames gom lại cho CNN
   feature_dim: 512          # Kích thước feature vector output CNN
   grayscale: true           # Chuyển sang ảnh xám
 
 simulation:
-  n_sensors: 5              # Số tia cảm biến
+  n_sensors: 7              # Số tia cảm biến
   sensor_range: 120         # Pixels — tầm nhìn tối đa
   sensor_angles:            # Góc so với hướng xe (radian)
+    - -1.5
     - -0.6
     - -0.3
     - 0.0
     - 0.3
     - 0.6
+    - 1.5
   max_speed: 3.0            # Pixel/frame
   acceleration: 0.15        # Tăng tốc mỗi frame
   friction: 0.02            # Giảm tốc tự nhiên
@@ -68,6 +70,7 @@ rendering:
   fps: 60
   show_sensors: true        # Hiển thị tia cảm biến
   show_trails: true         # Hiển thị vết di chuyển
+  show_checkpoints: true    # Hiển thị các điểm đích tàng hình
   trail_length: 40          # Số frame trail
   elite_color: [29, 158, 117]   # RGB #1D9E75
   normal_color: [55, 138, 221]  # RGB #3788DD
@@ -76,7 +79,7 @@ rendering:
   sensor_color: [255, 255, 255, 60]  # RGBA
 
 track:
-  default: oval             # oval | figure8 | city | custom
+  default: city_simple      # oval | figure8 | city_simple | city | custom
   track_width: 56           # Pixels
   checkpoint_interval: 60   # Pixels giữa các checkpoint
 

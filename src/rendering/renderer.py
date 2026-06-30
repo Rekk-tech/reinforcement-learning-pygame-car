@@ -64,6 +64,7 @@ class Renderer:
         fps: int = 60,
         show_sensors: bool = True,
         show_trails: bool = True,
+        show_checkpoints: bool = True,
         headless: bool = False,
     ):
         pygame.init()
@@ -76,6 +77,7 @@ class Renderer:
         self.fps = fps
         self.show_sensors = show_sensors
         self.show_trails = show_trails
+        self.show_checkpoints = show_checkpoints
         self.clock = pygame.time.Clock()
 
         # Fonts
@@ -89,29 +91,66 @@ class Renderer:
     # ── Track rendering ───────────────────────────────────────────────
 
     def _draw_track(self, track: "Track") -> None:
-        pts = track.waypoints + [track.waypoints[0]]
+        n = len(track.waypoints)
+        if n < 2:
+            return
 
-        # Road fill (thick polyline)
-        if len(pts) >= 2:
-            pygame.draw.lines(
-                self.screen, COLORS["track_fill"],
-                True, track.waypoints, track.track_width
+        # 1. Edge highlight (draw thick segments and node circles)
+        for i in range(n):
+            a = track.waypoints[i]
+            b = track.waypoints[(i + 1) % n]
+            wa = track.widths[i]
+            wb = track.widths[(i + 1) % n]
+            
+            avg_w = int((wa + wb) / 2)
+            pygame.draw.line(self.screen, COLORS["track_edge"], (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), avg_w)
+            pygame.draw.circle(self.screen, COLORS["track_edge"], (int(a[0]), int(a[1])), int(wa / 2))
+
+        # 2. Road fill (draw slightly thinner segments to reveal edge)
+        for i in range(n):
+            a = track.waypoints[i]
+            b = track.waypoints[(i + 1) % n]
+            wa = track.widths[i]
+            wb = track.widths[(i + 1) % n]
+            
+            avg_w = max(2, int((wa + wb) / 2) - 8)
+            radius = max(1, int(wa / 2) - 4)
+            
+            pygame.draw.line(self.screen, COLORS["track_fill"], (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), avg_w)
+            pygame.draw.circle(self.screen, COLORS["track_fill"], (int(a[0]), int(a[1])), radius)
+
+        # 3. Center dashed line
+        for i in range(n):
+            a = track.waypoints[i]
+            b = track.waypoints[(i + 1) % n]
+            mx = (a[0] + b[0]) / 2
+            my = (a[1] + b[1]) / 2
+            pygame.draw.line(
+                self.screen, COLORS["center_line"],
+                (int(a[0]), int(a[1])), (int(mx), int(my)), 1
             )
-            # Edge highlight
-            pygame.draw.lines(
-                self.screen, COLORS["track_edge"],
-                True, track.waypoints, max(2, track.track_width - 8)
-            )
-            # Center dashed line
-            for i in range(len(track.waypoints)):
-                a = track.waypoints[i]
-                b = track.waypoints[(i + 1) % len(track.waypoints)]
-                # Vẽ đoạn ngắn thay vì liền
-                mx = (a[0] + b[0]) / 2
-                my = (a[1] + b[1]) / 2
+
+    def _draw_checkpoints(self, track: "Track", cars: List["Car"]) -> None:
+        if not hasattr(track, "checkpoints") or not track.checkpoints:
+            return
+            
+        # Vẽ các vùng checkpoint mờ
+        for cx, cy, radius in track.checkpoints:
+            pygame.draw.circle(self._overlay, (255, 200, 0, 30), (int(cx), int(cy)), int(radius), 2)
+
+        # Vẽ tia chỉ đường (vàng rực) cho xe dẫn đầu hoặc tất cả
+        best_car = None
+        alive_cars = [c for c in cars if c.alive]
+        if alive_cars:
+            best_car = max(alive_cars, key=lambda c: c.fitness)
+            
+        for car in alive_cars:
+            if car.target_checkpoint:
+                cx, cy = car.target_checkpoint
+                color = (255, 200, 0, 180) if car is best_car else (255, 200, 0, 40)
                 pygame.draw.line(
-                    self.screen, COLORS["center_line"],
-                    (int(a[0]), int(a[1])), (int(mx), int(my)), 1
+                    self._overlay, color,
+                    (int(car.x), int(car.y)), (int(cx), int(cy)), 2 if car is best_car else 1
                 )
 
     # ── Sensor rays ───────────────────────────────────────────────────
@@ -242,6 +281,10 @@ class Renderer:
 
         # Layer 1: Track
         self._draw_track(track)
+        
+        # Layer 1.5: Checkpoints
+        if self.show_checkpoints:
+            self._draw_checkpoints(track, cars)
 
         # Layer 2: Trails
         if self.show_trails:

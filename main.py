@@ -63,8 +63,8 @@ def make_population(ga: GeneticAlgorithm, track: Track) -> list[Car]:
     return cars
 
 
-def run_headless(ga: GeneticAlgorithm, track: Track, max_frames: int = 3000) -> list[float]:
-    """Chay 1 generation khong render, tra ve fitness scores."""
+def run_headless(ga: GeneticAlgorithm, track: Track, max_frames: int = 3000) -> tuple[list[float], int]:
+    """Chay 1 generation khong render, tra ve (fitness scores, alive count)."""
     cars = make_population(ga, track)
     for _ in range(max_frames):
         all_dead = all(not c.alive for c in cars)
@@ -72,7 +72,8 @@ def run_headless(ga: GeneticAlgorithm, track: Track, max_frames: int = 3000) -> 
             break
         for car in cars:
             car.step(track)
-    return [c.fitness for c in cars]
+    alive_count = sum(1 for c in cars if c.alive)
+    return [c.fitness for c in cars], alive_count
 
 
 def run_with_render(
@@ -82,8 +83,8 @@ def run_with_render(
     hud,
     controls,
     max_frames: int = 3000,
-) -> list[float] | None:
-    """Chay 1 generation voi pygame rendering + HUD + Controls."""
+) -> tuple[list[float], int] | None:
+    """Chay 1 generation voi pygame rendering, tra ve (fitness scores, alive count)."""
     import pygame
     cars = make_population(ga, track)
 
@@ -123,7 +124,8 @@ def run_with_render(
         controls.draw(renderer.screen)
         pygame.display.flip()
 
-    return [c.fitness for c in cars]
+    alive_count = sum(1 for c in cars if c.alive)
+    return [c.fitness for c in cars], alive_count
 
 
 def run_ga(args, cfg):
@@ -180,6 +182,7 @@ def run_ga(args, cfg):
             fps          = ren_cfg.get("fps", 60),
             show_sensors = ren_cfg.get("show_sensors", True),
             show_trails  = ren_cfg.get("show_trails", True),
+            show_checkpoints = ren_cfg.get("show_checkpoints", True),
         )
         hud = HUD(screen_width=w, screen_height=h)
         hud.set_algorithm("GA")
@@ -206,12 +209,13 @@ def run_ga(args, cfg):
         # -- Training loop --
         for gen in range(max_gens):
             if headless:
-                fitness_scores = run_headless(ga, track)
+                fitness_scores, alive_count = run_headless(ga, track)
             else:
-                fitness_scores = run_with_render(ga, track, renderer, hud, controls)
-                if fitness_scores is None:
+                res = run_with_render(ga, track, renderer, hud, controls)
+                if res is None:
                     print("\n  Simulation stopped by user.")
                     break
+                fitness_scores, alive_count = res
 
             # Cap nhat HUD chart data
             if hud:
@@ -220,7 +224,7 @@ def run_ga(args, cfg):
                     "mean_fitness": float(np.mean(fitness_scores)),
                 })
 
-            print(ga.log_generation(fitness_scores))
+            print(ga.log_generation(fitness_scores, alive_count))
             ga.evolve(fitness_scores)
 
             tracker.log_metrics({
@@ -294,6 +298,7 @@ def run_ppo(args, cfg):
             fps          = ren_cfg.get("fps", 60),
             show_sensors = ren_cfg.get("show_sensors", True),
             show_trails  = ren_cfg.get("show_trails", True),
+            show_checkpoints = ren_cfg.get("show_checkpoints", True),
             headless     = headless,
         )
         if not headless:
@@ -312,7 +317,7 @@ def run_ppo(args, cfg):
         )
         obs_dim = camera.observation_shape[0]  # so channels (vi du: 4)
     else:
-        obs_dim = sim_cfg.get("n_sensors", 5)
+        obs_dim = sim_cfg.get("n_sensors", 5) + 1  # +1 cho compass (angle_diff)
 
     # -- Init PPO agent --
     agent = PPOAgent(

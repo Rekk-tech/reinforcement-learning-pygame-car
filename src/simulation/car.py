@@ -68,9 +68,13 @@ class Car:
         self.is_elite = is_elite
 
         self.trail: List[Tuple[float, float]] = []
-        self._last_fitness = 0.0
         self._stuck_counter = 0
         self._frame_count = 0
+        self.cp_idx = 0
+        self.total_cp_passed = 0
+        self.last_cp_passed_frame = 0
+        self.target_checkpoint = None
+        self.angle_diff = 0.0
 
         # Cache sensor readings cho renderer
         self.sensor_endpoints: List[Tuple[float, float]] = []
@@ -104,6 +108,23 @@ class Car:
             self.sensor_endpoints.append(
                 (self.x + cos_a * dist, self.y + sin_a * dist)
             )
+
+        # 8th input: Angle difference to next checkpoint
+        if hasattr(track, "checkpoints") and len(track.checkpoints) > 0:
+            cx, cy, _ = track.checkpoints[self.cp_idx]
+            self.target_checkpoint = (cx, cy)
+            target_angle = math.atan2(cy - self.y, cx - self.x)
+            # Normalize angle diff to [-pi, pi]
+            angle_diff = (target_angle - self.angle + math.pi) % (2 * math.pi) - math.pi
+            self.angle_diff = angle_diff
+            
+            # Kill if going backwards (angle diff > 90 degrees)
+            if abs(angle_diff) > math.pi / 2:
+                self.alive = False
+                
+            values.append(angle_diff / math.pi) # [-1, 1]
+        else:
+            values.append(0.0)
 
         self.sensor_values = values
         return values
@@ -140,7 +161,20 @@ class Car:
 
         self.x = nx
         self.y = ny
-        self.fitness += self.speed  # reward = quãng đường
+
+        # Checkpoint logic
+        if hasattr(track, "checkpoints") and len(track.checkpoints) > 0:
+            cx, cy, radius = track.checkpoints[self.cp_idx]
+            dist_to_cp = math.hypot(self.x - cx, self.y - cy)
+            if dist_to_cp < radius:
+                self.cp_idx = (self.cp_idx + 1) % len(track.checkpoints)
+                self.total_cp_passed += 1
+                self.last_cp_passed_frame = self._frame_count
+            
+            # Fitness dựa hoàn toàn vào checkpoint
+            self.fitness = self.total_cp_passed * 1000 - dist_to_cp
+        else:
+            self.fitness += self.speed  # Fallback
 
         # Trail
         self.trail.append((self.x, self.y))
@@ -150,16 +184,10 @@ class Car:
         return True
 
     def check_stuck(self) -> None:
-        """Tự chết nếu không tiến được trong MAX_STUCK_FRAMES frames."""
+        """Tự chết nếu không qua checkpoint mới trong MAX_STUCK_FRAMES frames."""
         self._frame_count += 1
-        if self._frame_count % 30 == 0:
-            if self.fitness - self._last_fitness < 1.0:
-                self._stuck_counter += 30
-            else:
-                self._stuck_counter = 0
-            self._last_fitness = self.fitness
-
-        if self._stuck_counter >= self.MAX_STUCK_FRAMES:
+        frames_since_cp = self._frame_count - self.last_cp_passed_frame
+        if frames_since_cp >= 150:  # Khoảng 2.5 giây không qua checkpoint
             self.alive = False
 
     # ── Main step (GA mode) ─────────────────────────────────────────────
@@ -206,11 +234,14 @@ class Car:
         self.fitness = 0.0
         self.alive = True
         self.trail = []
-        self._last_fitness = 0.0
-        self._stuck_counter = 0
         self._frame_count = 0
+        self.cp_idx = 0
+        self.total_cp_passed = 0
+        self.last_cp_passed_frame = 0
+        self.target_checkpoint = None
+        self.angle_diff = 0.0
         self.sensor_endpoints = []
-        self.sensor_values = [1.0] * self.N_SENSORS
+        self.sensor_values = [1.0] * (self.N_SENSORS + 1)
 
     def gym_step(
         self, action: "Tuple[float, float]", track: "Track"
@@ -229,7 +260,7 @@ class Car:
             info: Dict thông tin phụ
         """
         if not self.alive:
-            obs = [0.0] * self.N_SENSORS
+            obs = [0.0] * (self.N_SENSORS + 1)  # 7 sensors + 1 compass
             return obs, 0.0, True, {"reason": "already_dead"}
 
         turn, engine = float(action[0]), float(action[1])
@@ -253,7 +284,7 @@ class Car:
         if self.alive:
             obs = self.cast_sensors(track)
         else:
-            obs = [0.0] * self.N_SENSORS
+            obs = [0.0] * (self.N_SENSORS + 1)  # 7 sensors + 1 compass
 
         info = {
             "speed": self.speed,
