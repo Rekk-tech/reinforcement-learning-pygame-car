@@ -43,7 +43,7 @@ class Car:
     MAX_SPEED: float = 3.0
     ACCELERATION: float = 0.15
     FRICTION: float = 0.02
-    MAX_STEER: float = 0.08
+    MAX_STEER: float = 0.12
     N_SENSORS: int = 5
     SENSOR_RANGE: float = 120.0
     SENSOR_ANGLES: List[float] = [-0.6, -0.3, 0.0, 0.3, 0.6]
@@ -118,8 +118,8 @@ class Car:
             angle_diff = (target_angle - self.angle + math.pi) % (2 * math.pi) - math.pi
             self.angle_diff = angle_diff
             
-            # Kill if going backwards (angle diff > 90 degrees)
-            if abs(angle_diff) > math.pi / 2:
+            # Kill if going backward (angle diff > 135 degrees) to avoid compass trap on sharp turns
+            if abs(angle_diff) > math.pi * 0.75:
                 self.alive = False
                 
             values.append(angle_diff / math.pi) # [-1, 1]

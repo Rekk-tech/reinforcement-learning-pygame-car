@@ -338,14 +338,22 @@ def run_ppo(args, cfg):
 
     # -- Init reward calculator --
     reward_calc = RewardCalculator.from_config(rew_cfg)
+    ckpt_path  = Path(output_dir) / "ppo_model.pt"
+    best_ckpt_path = Path(output_dir) / "best_ppo_model.pt"
 
-    # -- Resume --
-    ckpt_path = Path(output_dir) / "ppo_model.pt"
-    if args.resume and ckpt_path.exists():
-        agent.load(str(ckpt_path))
-        print(f"  [OK] Da tai PPO checkpoint: ep {agent.episode_count}, steps {agent.total_steps}")
-    elif args.resume:
-        print(f"  [--] Khong tim thay PPO checkpoint tai {ckpt_path}, khoi tao moi.")
+    # Resume from latest
+    if args.resume:
+        if ckpt_path.exists():
+            agent.load(str(ckpt_path))
+            print(f"  [OK] Da tai checkpoint tu ep {agent.episode_count}")
+        elif best_ckpt_path.exists():
+            agent.load(str(best_ckpt_path))
+            print(f"  [OK] Da tai BEST checkpoint tu ep {agent.episode_count}")
+        else:
+            print(f"  [WARNING] Khong tim thay {ckpt_path}, chay tu dau.")
+
+    global_steps = agent.total_steps
+    best_episode_reward = max(agent.episode_rewards) if agent.episode_rewards else -float("inf")
 
     # -- Init dummy car (PPO dung 1 xe duy nhat) --
     dummy_nn = NeuralNetwork(architecture=[5, 4, 2], activation="tanh") # Dummy
@@ -488,12 +496,20 @@ def run_ppo(args, cfg):
                 "episode_steps": step_i + 1
             }, step=ep)
 
-            # Auto-save
+            # Auto-save best model
+            if episode_reward > best_episode_reward:
+                best_episode_reward = episode_reward
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+                agent.save(str(best_ckpt_path))
+                tracker.save_artifact(str(best_ckpt_path))
+                print(f"  [SAVE] New BEST PPO model (reward: {best_episode_reward:.1f}) -> {best_ckpt_path}")
+
+            # Auto-save latest model
             if save_every > 0 and (agent.episode_count % save_every == 0):
                 Path(output_dir).mkdir(parents=True, exist_ok=True)
                 agent.save(str(ckpt_path))
                 tracker.save_artifact(str(ckpt_path))
-                print(f"  [SAVE] PPO model saved at ep {agent.episode_count} -> {ckpt_path}")
+                print(f"  [SAVE] Latest PPO model saved at ep {agent.episode_count} -> {ckpt_path}")
 
         # Final update voi data con lai trong buffer
         if len(agent.buffer) > 0:

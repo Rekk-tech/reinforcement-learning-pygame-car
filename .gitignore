@@ -163,3 +163,10 @@ checkpoints/
 mlruns/
 *.mp4
 *.gif
+
+# Agent Toolkits & Skill Configuration Files
+.agent/
+.specify/
+.docs/agents/
+AGENTS.md
+skills-lock.json 

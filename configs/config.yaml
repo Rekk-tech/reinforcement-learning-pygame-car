@@ -17,17 +17,17 @@ neural_network:
 
 ppo:
   hidden_sizes: [64, 64]    # Kiến trúc backbone
-  lr: 0.0003                # Learning rate (Adam)
+  lr: 0.0001                # Giảm Learning rate để học cẩn thận hơn (cũ: 0.0003)
   gamma: 0.99               # Discount factor
   gae_lambda: 0.95          # GAE lambda
   clip_epsilon: 0.2         # PPO clipping range
   epochs: 10                # Số epoch update mỗi batch
-  batch_size: 64            # Mini-batch size
+  batch_size: 128           # Tăng Mini-batch size (cũ: 64)
   entropy_coeff: 0.01       # Hệ số entropy bonus
   value_coeff: 0.5          # Hệ số value loss
   max_grad_norm: 0.5        # Gradient clipping
   max_steps_per_episode: 3000  # Frames tối đa mỗi episode
-  update_every: 2048        # Steps giữa mỗi lần update
+  update_every: 4096        # Thu thập nhiều data hơn trước khi update (cũ: 2048)
   total_episodes: 500       # Tổng số episodes training
 
 reward:
