@@ -16,7 +16,8 @@ services:
       - PYTHONUNBUFFERED=1
       - SDL_VIDEODRIVER=dummy
       - SDL_AUDIODRIVER=dummy
-    command: ["--headless", "--generations", "100"]
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    command: ["--algorithm", "ppo", "--headless", "--generations", "100"]
     depends_on:
       - mlflow
 
