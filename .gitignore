@@ -159,7 +159,8 @@ cython_debug/
 .idea/
 
 # Custom project paths
-checkpoints/
+checkpoints/checkpoints/ppo_model.pt
+checkpoints/checkpoints/best_ppo_model_1437_backup.pt
 mlruns/
 *.mp4
 *.gif

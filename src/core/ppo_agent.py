@@ -421,14 +421,14 @@ class PPOAgent:
 
     # ── Logging ───────────────────────────────────────────────────────
 
-    def log_episode(self, episode_reward: float) -> str:
+    def log_episode(self, episode_reward: float, session_best: float = None) -> str:
         """Format log string cho 1 episode."""
         self.episode_count += 1
         self.episode_rewards.append(episode_reward)
 
         recent = self.episode_rewards[-100:]
         avg = sum(recent) / len(recent)
-        best = max(self.episode_rewards)
+        best = max(self.episode_rewards) if session_best is None else session_best
 
         return (
             f"Ep {self.episode_count:4d} | "

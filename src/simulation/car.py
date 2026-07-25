@@ -40,7 +40,7 @@ class Car:
     """
 
     # ── Class-level physics constants (override từ config) ──────────
-    MAX_SPEED: float = 3.0
+    MAX_SPEED: float = 1.5
     ACCELERATION: float = 0.15
     FRICTION: float = 0.02
     MAX_STEER: float = 0.12
@@ -75,6 +75,11 @@ class Car:
         self.last_cp_passed_frame = 0
         self.target_checkpoint = None
         self.angle_diff = 0.0
+        
+        # Tracking cho reward shaping
+        self.last_turn = 0.0
+        self.last_engine = 1.0
+        self.jerk = 0.0
 
         # Cache sensor readings cho renderer
         self.sensor_endpoints: List[Tuple[float, float]] = []
@@ -242,6 +247,9 @@ class Car:
         self.angle_diff = 0.0
         self.sensor_endpoints = []
         self.sensor_values = [1.0] * (self.N_SENSORS + 1)
+        self.last_turn = 0.0
+        self.last_engine = 1.0
+        self.jerk = 0.0
 
     def gym_step(
         self, action: "Tuple[float, float]", track: "Track"
@@ -264,6 +272,11 @@ class Car:
             return obs, 0.0, True, {"reason": "already_dead"}
 
         turn, engine = float(action[0]), float(action[1])
+
+        # Tính độ giật (jerk) và lưu trạng thái
+        self.jerk = abs(turn - self.last_turn)
+        self.last_turn = turn
+        self.last_engine = engine
 
         # Áp dụng hành động
         self.act(turn, engine)

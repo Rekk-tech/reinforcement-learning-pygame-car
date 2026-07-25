@@ -1,135 +1,152 @@
-# Training Guide — Deep Learning Cars
+﻿# 🎓 Training Guide — Deep Learning Cars (PPO)
 
-## Tong Quan
-
-Du an ho tro 2 thuat toan training:
-- **GA (Genetic Algorithm)**: Neuroevolution — don gian, hoi tu nhanh voi mang nho
-- **PPO (Proximal Policy Optimization)**: Deep RL — manh me hon, scale duoc voi mang lon
+Hướng dẫn huấn luyện từng bước từ đầu đến khi AI tự lái thành thạo.
 
 ---
 
-## 1. Genetic Algorithm (GA)
+## Lộ trình Curriculum Learning
 
-### Cach chay
-
-```bash
-# Mode co giao dien (render)
-python main.py
-
-# Mode khong giao dien (nhanh hon)
-python main.py --headless --generations 100
-
-# Tiep tuc tu checkpoint
-python main.py --resume
+```
+Giai đoạn 0       Giai đoạn 1       Giai đoạn 2       Giai đoạn 3
+──────────────    ──────────────    ──────────────    ──────────────
+map_straight  →  oval / city_simple →  city_oval   →  city (cuối)
+ (khởi động)      (tốt nghiệp)      (kết hợp)       (thành thạo)
 ```
 
-### Hyperparams quan trong
-
-| Tham so | Default | Goi y tuning |
-|---------|---------|-------------|
-| `population_size` | 20 | Tang len 40-60 de tang da dang |
-| `n_elites` | 4 | Giu 10-20% population |
-| `mutation_rate` | 0.08 | Tang khi bi ket local optima |
-| `mutation_strength` | 0.30 | Giam khi da hoi tu co ban |
-
-### Ket qua ky vong
-
-| Generation | Hanh vi dien hinh |
-|------------|------------------|
-| 1-3 | Ngau nhien, da so dam tuong |
-| 4-8 | Mot so xe biet re, di duoc vai giay |
-| 10-15 | Elite xe hoan thanh 1 vong co ban |
-| 20+ | Xe toi uu duong di, toc do cao on dinh |
-
 ---
 
-## 2. PPO (Proximal Policy Optimization)
-
-### Cach chay
+## Giai đoạn 0: Khởi động từ đầu
 
 ```bash
-# PPO headless
-python main.py --algorithm ppo --headless --generations 500
-
-# PPO voi render
-python main.py --algorithm ppo
-
-# Resume PPO
-python main.py --algorithm ppo --resume
+.\venv\Scripts\python.exe main.py --algorithm ppo --track map_straight
 ```
 
-### Hyperparams quan trong
-
-| Tham so | Default | Goi y |
-|---------|---------|-------|
-| `lr` | 3e-4 | Giam xuong 1e-4 neu training khong on dinh |
-| `gamma` | 0.99 | Giu nguyen, day la gia tri chuan |
-| `clip_epsilon` | 0.2 | Giu nguyen |
-| `epochs` | 10 | Tang len 15-20 neu batch lon |
-| `entropy_coeff` | 0.01 | Tang len 0.05 neu can nhieu exploration |
-
-### Ket qua ky vong
-
-| Episode | Hanh vi dien hinh |
-|---------|------------------|
-| 1-50 | Reward am, xe chua biet di |
-| 50-150 | Reward tang dan, xe bat dau di thang |
-| 150-300 | Xe biet re, hoan thanh cac khuc cua |
-| 300+ | Xe toi uu toc do va duong di |
+Mục tiêu: AI học phản xạ cơ bản — nhấn ga, đọc cảm biến.
+Dừng khi: `avg100 > 300` hoặc `best > 400`.
 
 ---
 
-## 3. Config Reference
+## Giai đoạn 1: map tốt nghiệp Oval / City Simple
 
-File config: `configs/config.yaml`
+```bash
+# Sau khi đã có model từ map_straight
+.\venv\Scripts\python.exe main.py --algorithm ppo --track oval --resume
+```
 
-### Chuyen doi thuat toan
+Mục tiêu: AI học ôm cua rộng ở tốc độ cao.
+Dừng khi: `best > 1000` (tương đương đi được 20+ checkpoint liên tiếp).
+**Kỷ lục đạt được**: 1437.1 điểm tại ep 581.
+
+---
+
+## Giai đoạn 2: Map kết hợp City Oval
+
+```bash
+.\venv\Scripts\python.exe main.py --algorithm ppo --track city_oval --resume
+```
+
+Mục tiêu: Học kết hợp đường thẳng dài + cua oval mượt mà.
+
+---
+
+## Giai đoạn 3: Thách thức Final — City
+
+```bash
+.\venv\Scripts\python.exe main.py --algorithm ppo --track city --resume
+```
+
+---
+
+## Resume & Checkpoint
+
+Khi chạy `--resume`, script tìm file theo thứ tự ưu tiên:
+1. `checkpoints/ppo_model.pt` (checkpoint mới nhất)
+2. `checkpoints/best_ppo_model.pt` (tốt nhất nếu không có cái trên)
+
+### Khôi phục model từ MLflow (nếu file bị ghi đè)
+
+```python
+import torch, shutil
+src = "mlruns/2/<run_id>/artifacts/best_ppo_model.pt"
+shutil.copy(src, "checkpoints/best_ppo_model.pt")
+```
+
+---
+
+## Tham số Reward Shaping — Khi nào điều chỉnh?
+
+| Tình huống | Hành động |
+|-----------|-----------|
+| AI không chịu phanh (lút ga đâm tường) | Tăng `speed_angle_penalty` |
+| Điểm âm quá sâu (khủng hoảng) | Giảm `speed_angle_penalty` |
+| AI đứng im (scared) | Giảm `stuck_penalty` hoặc tăng `alive_bonus` |
+| AI chạy giật cục (zigzag) | Tăng `jerk_penalty`, `turn_penalty` |
+| AI bám sát tường | Tăng `proximity_penalty` |
+| AI không chịu khám phá | Tăng `entropy_coeff` trong config |
+
+---
+
+## Environment Relaxation — Kỹ thuật dạy phanh
+
+Khi AI bị "nghiện chân ga" (Policy Inertia):
 
 ```yaml
-# Trong config.yaml
-algorithm: ga    # hoac: ppo
+# Giảm tốc độ để AI dễ ôm cua (trong car.py)
+MAX_SPEED: float = 1.5   # Giảm từ 3.0
+
+# Hoặc tăng entropy để ép khám phá (trong config.yaml)
+entropy_coeff: 0.05      # Tăng từ 0.01
 ```
 
-Hoac dung command line:
-```bash
-python main.py --algorithm ppo
-```
-
-### Shaped Reward (PPO)
-
-```yaml
-reward:
-  speed_bonus_weight: 0.1   # Thuong toc do
-  wall_penalty: -10.0       # Phat dam tuong
-  checkpoint_bonus: 50.0    # Thuong qua checkpoint
-  stuck_penalty: -0.5       # Phat dung im
-  alive_bonus: 0.05         # Thuong song sot
+Sau khi AI học được hành vi phanh, tăng dần lại:
+```python
+MAX_SPEED = 2.0  # → rồi 3.0
 ```
 
 ---
 
-## 4. Checkpointing
+## Quan sát UI trong lúc Train
 
-### GA checkpoint
-- Luu tai: `checkpoints/best.npy` + `checkpoints/metadata.json`
-- Tu dong luu moi 10 gen (config: `training.save_best_every`)
+| Màu sắc | Ý nghĩa |
+|---------|---------|
+| 🟠 Xe cam | Xe tốt nhất hiện tại |
+| 🔵 Xe xanh | Xe thường |
+| 🔴 Xe đỏ | Xe vừa chết |
+| Tia trắng | 5 tia cảm biến (raycast) |
+| Mũi tên cam | La bàn hướng đến checkpoint |
+| Vòng tròn vàng | Checkpoint |
 
-### PPO checkpoint
-- Luu tai: `checkpoints/ppo_model.pt`
-- Chua: network weights, optimizer state, episode count
-
-### Resume training
-```bash
-python main.py --resume                    # GA
-python main.py --algorithm ppo --resume    # PPO
-```
+| HUD Item | Ý nghĩa |
+|----------|---------|
+| `reward` | Reward tích lũy của episode này |
+| `avg100` | Trung bình reward 100 episode gần nhất |
+| `best` | Kỷ lục episode reward trong phiên chạy |
+| `steps` | Tổng số steps từ đầu train |
 
 ---
 
-## 5. Tips & Tricks
+## MLflow Dashboard
 
-1. **GA khong hoi tu?** Tang `mutation_rate` len 0.15 va `population_size` len 40
-2. **PPO reward giam?** Giam `lr` xuong 1e-4 hoac tang `entropy_coeff`
-3. **Xe bi stuck?** Giam `max_stuck_frames` xuong 80 de ket thuc som hon
-4. **Muon train nhanh?** Dung `--headless` mode (nhanh hon 5-10x)
-5. **Track kho?** Thu `figure8` hoac `city` thay vi `oval`
+```bash
+.\venv\Scripts\python.exe -m mlflow ui
+# Mở http://localhost:5000
+```
+
+Xem được:
+- So sánh nhiều run song song
+- Biểu đồ reward theo thời gian
+- Download model artifact từ bất kỳ run nào
+
+---
+
+## Lưu ý An toàn (Tránh mất model)
+
+> Khi script khởi động, `best_episode_reward = -inf` nên episode đầu tiên BẤT KỲ cũng sẽ ghi đè `best_ppo_model.pt`!
+
+**Quy tắc bảo vệ model quý giá:**
+1. Luôn giữ file `best_ppo_model_1437_backup.pt` (hoặc đặt tên theo kỷ lục)
+2. Trước khi thử nghiệm rủi ro, copy backup:
+   ```powershell
+   Copy-Item checkpoints\best_ppo_model.pt checkpoints\backup_before_exp.pt
+   ```
+3. Dùng MLflow để tra cứu và phục hồi bất kỳ model nào trong lịch sử

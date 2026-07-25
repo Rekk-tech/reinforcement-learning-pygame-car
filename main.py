@@ -353,7 +353,9 @@ def run_ppo(args, cfg):
             print(f"  [WARNING] Khong tim thay {ckpt_path}, chay tu dau.")
 
     global_steps = agent.total_steps
-    best_episode_reward = max(agent.episode_rewards) if agent.episode_rewards else -float("inf")
+    # Reset best_episode_reward cho session hien tai de curriculum learning (chuyen map)
+    # co the luu duoc best_model moi ngay ca khi diem so cua map moi thap hon map cu.
+    best_episode_reward = -float("inf")
 
     # -- Init dummy car (PPO dung 1 xe duy nhat) --
     dummy_nn = NeuralNetwork(architecture=[5, 4, 2], activation="tanh") # Dummy
@@ -409,8 +411,9 @@ def run_ppo(args, cfg):
                 # Step environment (vat ly xe di chuyen)
                 next_obs_sensor, base_reward, done, info = car.gym_step(action, track)
 
-                # Shaped reward
-                reward = reward_calc.compute(car, track, done)
+                # Shaped reward = checkpoint progress + speed/alive/penalty bonuses
+                shaped_reward = reward_calc.compute(car, track, done)
+                reward = (base_reward * 0.01) + shaped_reward
                 episode_reward += reward
 
                 # Neu co CNN thi chup anh lai sau khi xe di chuyen
@@ -482,7 +485,7 @@ def run_ppo(args, cfg):
 
             # Log episode + update HUD
             agent.total_steps = global_steps
-            log_str = agent.log_episode(episode_reward)
+            log_str = agent.log_episode(episode_reward, session_best=max(best_episode_reward, episode_reward))
             print(log_str)
 
             if hud:

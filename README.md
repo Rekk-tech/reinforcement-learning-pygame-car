@@ -1,177 +1,113 @@
-# Deep Learning Cars — Autonomous Driving Simulation
+﻿# 🏎️ Deep Learning Cars
 
-Mo phong xe tu lai hoc cach dieu khien bang **Tri tue nhan tao (AI)** tren sa hinh 2D.
-Du an ho tro ca **Neuroevolution (Genetic Algorithm)** va **Deep Reinforcement Learning (PPO)**,
-cho phep so sanh su khac biet giua cac phuong phap — tu mang nho gon 118 tham so den mang CNN 1.7 trieu tham so.
-
----
-
-## Tinh Nang Chinh
-
-- **3 Che do AI**: GA + Sensor | PPO + Sensor | PPO + Pixel (CNN)
-- **He thong Checkpoint**: Dan duong AI bang cac diem kiem soat tu dong, kem la ban dinh huong
-- **Tien hoa thong minh**: Mutation decay giam dan — tu kham pha sang toi uu hoa
-- **4 sa hinh**: `oval` → `figure8` → `city_simple` → `city` (tang dan do kho)
-- **Duong dua do rong bien thien**: Nga tu rong hon, doan thang hep hon
-- **Giao dien truc quan**: HUD thoi gian thuc, bieu do fitness, tia laser, tia dan duong
-- **MLflow Tracking**: Tu dong log moi phien huan luyen
-- **Docker**: Chay nhanh voi Docker Compose
+Dự án mô phỏng xe tự lái 2D sử dụng hai thuật toán học máy:
+- **Genetic Algorithm (GA)** — Neuroevolution tiến hóa thế hệ xe
+- **Proximal Policy Optimization (PPO)** — Deep Reinforcement Learning
 
 ---
 
-## Kien Truc
+## 🗂 Cấu trúc Dự án
 
 ```
 deep-learning-cars/
-├── main.py                        # Entry point
-├── mlflow_tracking.py             # MLflow wrapper
-├── configs/config.yaml            # Tat ca hyperparams
-│
+├── main.py                     # Entry point chính
+├── mlflow_tracking.py          # MLflow experiment tracker
+├── configs/config.yaml         # Toàn bộ tham số cấu hình
 ├── src/
-│   ├── core/                      # AI: NN, GA, PPO, CNN
-│   ├── simulation/                # Vat ly: xe, track, reward, camera
-│   ├── rendering/                 # Pygame: renderer, HUD
-│   └── ui/                        # Controls: pause, speed, reset
-│
-├── checkpoints/                   # Trong so model (best.npy, ppo_model.pt)
-└── docs/PROJECT_REVIEW.md         # Tai lieu ky thuat chi tiet
+│   ├── core/
+│   │   ├── ppo_agent.py        # PPO Agent (ActorCritic + RolloutBuffer)
+│   │   ├── genetic_algorithm.py# GA + Elitism + Crossover + Mutation
+│   │   ├── neural_network.py   # Feed-forward NN cho GA
+│   │   └── cnn_encoder.py      # CNN Encoder (pixel mode, tuỳ chọn)
+│   ├── simulation/
+│   │   ├── car.py              # Agent xe (sensor, physics, gym API)
+│   │   ├── track.py            # Track definitions + PRESET_TRACKS
+│   │   └── reward.py           # Shaped Reward Function cho PPO
+│   ├── rendering/
+│   │   ├── renderer.py         # Pygame rendering engine
+│   │   └── hud.py              # HUD overlay (stats, fitness)
+│   └── ui/controls.py          # Keyboard/mouse controls
+├── checkpoints/
+│   ├── best_ppo_model.pt       # Model tốt nhất từ trước đến nay
+│   ├── best_ppo_model_1437_backup.pt  # Backup kỷ lục 1437.1 (oval ep581)
+│   └── ppo_model.pt            # Checkpoint mới nhất (dùng để resume)
+├── docs/
+│   ├── PROJECT_REVIEW.md       # Phân tích kỹ thuật chi tiết
+│   ├── training_guide.md       # Hướng dẫn huấn luyện từng bước
+│   └── document.md             # Tài liệu thuyết trình tổng thể
+└── mlruns/                     # MLflow experiment data
 ```
 
 ---
 
-## Cai Dat
+## ⚡ Cài đặt & Chạy nhanh
 
 ```bash
-# 1. Tao moi truong ao
+# Tạo môi trường ảo
 python -m venv venv
+.\venv\Scripts\activate        # Windows
 
-# 2. Kich hoat (Windows)
-.\venv\Scripts\activate
-
-# 3. Cai thu vien
+# Cài thư viện
 pip install -r requirements.txt
-```
 
-**Yeu cau:** Python 3.10+, Windows/Linux/macOS
-
----
-
-## Cach Chay
-
-### GA Mode (Mac dinh — nhanh, don gian)
-
-```bash
-# Co giao dien (nhin xe chay voi tia laser + checkpoint)
-.\venv\Scripts\python.exe main.py
-
-# Khong giao dien (nhanh 5-10x)
-.\venv\Scripts\python.exe main.py --headless --generations 100
-
-# Doi sa hinh
-.\venv\Scripts\python.exe main.py --track city
-
-# Tiep tuc tu checkpoint
-.\venv\Scripts\python.exe main.py --resume
-```
-
-### PPO Mode (Deep RL — manh me hon)
-
-```bash
-# PPO + Sensor
+# Chạy PPO (thuật toán chính) trên city_simple
 .\venv\Scripts\python.exe main.py --algorithm ppo --track city_simple
 
-# PPO + Pixel (doi config.yaml: perception.mode = pixel)
-.\venv\Scripts\python.exe main.py --algorithm ppo --headless --generations 2000
+# Resume từ model đã train
+.\venv\Scripts\python.exe main.py --algorithm ppo --track city_simple --resume
 
-# Resume PPO
-.\venv\Scripts\python.exe main.py --algorithm ppo --resume
-```
+# Chạy Genetic Algorithm
+.\venv\Scripts\python.exe main.py --algorithm ga --track oval
 
-### Phim Tat Giao Dien
-
-| Phim | Chuc nang |
-|---|---|
-| `Space` | Tam dung / Tiep tuc |
-| `R` | Reset |
-| `+` / `-` | Tang / Giam toc do |
-| `1`-`9`, `0` | Toc do 1x-10x |
-| `Esc` | Thoat |
-
----
-
-## 3 Che Do AI
-
-| Che do | Thuat toan | Input | Mang | So tham so |
-|---|---|---|---|---|
-| **GA + Sensor** | Genetic Algorithm | 7 laser + 1 goc | FC 8→8→4→2 | 118 |
-| **PPO + Sensor** | PPO | 7 laser + 1 goc | FC 8→64→64→2 | ~4,933 |
-| **PPO + Pixel** | PPO | 84×84×4 frames | CNN 3Conv+FC512 | ~1,685,669 |
-
-### Chuyen doi Sensor ↔ Pixel
-
-Sua `configs/config.yaml`:
-
-```yaml
-perception:
-  mode: sensor    # 7 tia cam bien (nhanh)
-  # mode: pixel   # Camera 84x84 + CNN (nang, can GPU)
+# Xem MLflow dashboard
+.\venv\Scripts\python.exe -m mlflow ui   # → http://localhost:5000
 ```
 
 ---
 
-## He Thong Diem
+## 🗺 Danh sách Map
 
-### GA Fitness
-
-```
-Fitness = (So checkpoint da qua × 1000) − Khoang cach toi checkpoint tiep theo
-```
-
-### PPO Shaped Reward
-
-| Thanh phan | Gia tri | Khi nao |
-|---|---|---|
-| Alive bonus | +0.05 / frame | Song sot |
-| Speed bonus | +0.1 × (speed/3.0) | Di nhanh |
-| Checkpoint | +50.0 | Qua checkpoint moi |
-| Stuck penalty | −0.5 / frame | Toc do < 0.1 |
-| Wall penalty | −10.0 | Dam tuong |
-
-### Luat Tu Hinh
-
-- **Di lui**: Goc lech > 90° → chet ngay
-- **Le me**: 150 frames khong qua checkpoint → chet
-- **Dam tuong**: Ra ngoai bien duong → chet
+| Map           | Loại              | Độ khó | Mô tả                               |
+|---------------|-------------------|--------|--------------------------------------|
+| `map_straight`| Đường thẳng       | ⭐     | Học cơ bản: ga, cảm biến            |
+| `map_u_turn`  | U-Turn (Hairpin)  | ⭐⭐⭐ | Cua 180° — buộc phải học phanh      |
+| `map_zigzag`  | Zíczắc            | ⭐⭐⭐ | Đổi hướng liên tục trái-phải        |
+| `oval`        | Oval              | ⭐⭐   | Cua bo tròn rộng, tốc độ cao        |
+| `city_simple` | Chữ nhật bo góc   | ⭐⭐   | Đường thành phố cơ bản              |
+| `city_oval`   | Kết hợp           | ⭐⭐⭐ | Đoạn thẳng dài + cua oval mượt      |
+| `city`        | Số 8 vuông        | ⭐⭐⭐⭐| Thách thức cao nhất (inner/outer)   |
 
 ---
 
-## MLflow Tracking
+## 🧠 Thuật toán
 
-Moi phien train tu dong log metrics va hyperparams.
+### Proximal Policy Optimization (PPO)
+- **Kiến trúc**: Actor-Critic, shared backbone `obs(6) → FC[64] → FC[64] → Actor(2) + Critic(1)`
+- **Observation (6D)**: 5 tia cảm biến (raycast) + angle_diff đến checkpoint
+- **Action (2D)**: `[turn ∈ (-1,1), engine ∈ (-1,1)]` liên tục
+- **Hàm Reward**: Context-Aware Speed Bonus + Checkpoint + nhiều hình phạt
 
+### Genetic Algorithm (GA)
+- **Neuroevolution**: tiến hóa trọng số neural network qua nhiều thế hệ
+- **Elitism**: giữ nguyên top-N cá thể tốt nhất
+- **Operators**: Uniform Crossover + Gaussian Mutation với Annealing
+
+---
+
+## 📊 Tracking & Experiment
+
+MLflow tự động ghi lại mọi run (hyperparameters, metrics, model artifacts):
 ```bash
-# Mo MLflow UI
-.\venv\Scripts\python.exe -m mlflow ui
-# → http://127.0.0.1:5000
-```
-
-Hoac dung Docker:
-```bash
-docker-compose up mlflow
+.\venv\Scripts\python.exe -m mlflow ui   # → http://localhost:5000
 ```
 
 ---
 
-## Tai Lieu Chi Tiet
+## 🏆 Kết quả Huấn luyện
 
-Xem [docs/PROJECT_REVIEW.md](docs/PROJECT_REVIEW.md) de biet:
-- Pipeline huan luyen chi tiet (GA va PPO)
-- Kien truc mang no-ron (so do day du)
-- Cong thuc vat ly xe
-- Cach thuc checkpoint hoat dong
-- Hyperparameters mac dinh
-- Cach dung MLflow
-
----
-
-*Du an nay su dung Pygame, PyTorch, NumPy, MLflow.*
+| Mốc đạt được    | Map           | Best Reward | Episodes |
+|-----------------|---------------|-------------|---------|
+| Tốt nghiệp      | map_straight  | ~500        | ~100    |
+| Tốt nghiệp      | oval          | **1437.1**  | 581     |
+| Tốt nghiệp      | city_simple   | ~1045       | 582+    |
+| Đang thử nghiệm | city_oval     | 1246+       | 583+    |
